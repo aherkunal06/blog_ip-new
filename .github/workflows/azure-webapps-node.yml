@@ -1,4 +1,4 @@
-name: CI Build and Deploy
+name: CI/CD Deploy to Azure VM (Next.js + PM2 + NGINX)
 
 on:
   push:
@@ -6,9 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_WEBAPP_NAME: blogapp                     # <-- Your App Service name
-  AZURE_WEBAPP_PACKAGE_PATH: '.'                 # <-- Deploy the whole project
-  NODE_VERSION: '20.x'                           # <-- Stable LTS recommended for Azure
+  NODE_VERSION: '20.x'
+  APP_NAME: 'myapp'
 
 permissions:
   contents: read
@@ -18,42 +17,70 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
+    # 1. Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Node.js
+    # 2. Setup Node.js
+    - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
 
+    # 3. Install dependencies
     - name: Install dependencies
       run: npm install
 
-    - name: Build application
-      run: npm run build --if-present
+    # 4. Build Next.js app
+    - name: Build Next.js
+      run: npm run build
 
-    - name: Run tests (optional)
-      run: npm run test --if-present
-
-    # REQUIRED FOR NEXT.JS APPS
-    - name: Export Next.js (Optional)
-      if: ${{ hashFiles('next.config.js') != '' }}
+    # 5. Zip build package for upload
+    - name: Prepare deployment artifact
       run: |
-        echo "Checking if Next.js export is needed..."
-        if grep -q "output: 'standalone'" next.config.js; then
-          echo "Next.js standalone mode detected."
-        else
-          echo "No export config detected. Skipping."
-        fi
+        mkdir deploy
+        zip -r deploy/app.zip . \
+          -x "*.git*" \
+          -x "node_modules/*"
 
-    - name: Zip artifact for deployment
-      run: |
-        zip -r release.zip ${{ env.AZURE_WEBAPP_PACKAGE_PATH }}
-
-    - name: Deploy to Azure WebApp
-      uses: azure/webapps-deploy@v2
+    # 6. Upload ZIP to Azure VM via SCP
+    - name: Upload artifact to VM
+      uses: appleboy/scp-action@v0.1.7
       with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME }}
-        publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: release.zip
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        source: "deploy/app.zip"
+        target: "${{ secrets.SSH_PATH }}/app.zip"
+
+    # 7. SSH into VM → deploy & restart app
+    - name: Deploy on Azure VM
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+          cd ${{ secrets.SSH_PATH }}
+
+          echo "Stopping PM2 old instance..."
+          pm2 stop $APP_NAME || true
+
+          echo "Cleaning old release..."
+          rm -rf release
+          mkdir release
+
+          echo "Unzipping new release..."
+          unzip -o app.zip -d release
+
+          cd release
+
+          echo "Installing production dependencies..."
+          npm install --production --omit=dev
+
+          echo "Starting app with PM2..."
+          pm2 start npm --name "$APP_NAME" -- start
+
+          echo "Saving PM2 state..."
+          pm2 save
