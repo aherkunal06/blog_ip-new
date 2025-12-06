@@ -1,4 +1,4 @@
-name: CI/CD Deploy to Azure VM (Next.js + NGINX + systemd)
+name: Deploy Next.js to Azure VM
 
 on:
   push:
@@ -6,60 +6,40 @@ on:
   workflow_dispatch:
 
 env:
-  NODE_VERSION: "20.x"
+  NODE_VERSION: '20.x'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
+    - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ env.NODE_VERSION }}
-        cache: "npm"
-
-    - name: Install dependencies
-      run: npm install
-
-    - name: Lint Fix (optional)
-      run: echo "Skipping ESLint warnings in CI"
-
-    - name: Create production build (only to validate code)
-      run: npm run build
+    - name: Remove node_modules before upload
+      run: rm -rf node_modules
 
     - name: Install rsync
       run: sudo apt-get install -y rsync
 
-    - name: Deploy to Azure VM using rsync
+    - name: Upload files to VM (without node_modules)
       uses: burnett01/rsync-deployments@7.0.1
       with:
-        switches: -avzr --delete
-        path: ./  # Deploy entire project except ignored files
+        switches: -avzr --delete --exclude=node_modules --exclude=.next
+        path: "./"
         remote_path: ${{ secrets.SSH_PATH }}
         remote_host: ${{ secrets.SSH_HOST }}
         remote_user: ${{ secrets.SSH_USER }}
         remote_key: ${{ secrets.SSH_KEY }}
 
-    - name: Install & Restart Next.js Service on VM
+    - name: Install & Build on VM
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SSH_HOST }}
         username: ${{ secrets.SSH_USER }}
         key: ${{ secrets.SSH_KEY }}
         script: |
-          echo "🔄 Updating server code..."
           cd ${{ secrets.SSH_PATH }}
-
-          # Install production dependencies
-          npm install --production
-
-          # Build Next.js for production
+          npm install
           npm run build
-
-          # Restart systemd service
           sudo systemctl restart myapp
-          sudo systemctl status myapp --no-pager
