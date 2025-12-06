@@ -1,16 +1,15 @@
-name: CI/CD Deploy to Azure VM (Next.js + PM2 + NGINX + RSYNC)
+name: CI/CD Deploy to Azure VM (Next.js + NGINX + systemd)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 env:
-  NODE_VERSION: '20.x'
-  APP_NAME: 'myapp'
+  NODE_VERSION: "20.x"
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,35 +20,46 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
-        cache: 'npm'
+        cache: "npm"
 
     - name: Install dependencies
       run: npm install
 
-    - name: Build Next.js
+    - name: Lint Fix (optional)
+      run: echo "Skipping ESLint warnings in CI"
+
+    - name: Create production build (only to validate code)
       run: npm run build
 
-    - name: Install rsync tool
+    - name: Install rsync
       run: sudo apt-get install -y rsync
 
-    - name: Deploy with rsync
+    - name: Deploy to Azure VM using rsync
       uses: burnett01/rsync-deployments@7.0.1
       with:
         switches: -avzr --delete
-        path: ./
+        path: ./  # Deploy entire project except ignored files
         remote_path: ${{ secrets.SSH_PATH }}
         remote_host: ${{ secrets.SSH_HOST }}
         remote_user: ${{ secrets.SSH_USER }}
         remote_key: ${{ secrets.SSH_KEY }}
 
-    - name: Restart PM2 on VM
+    - name: Install & Restart Next.js Service on VM
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SSH_HOST }}
         username: ${{ secrets.SSH_USER }}
         key: ${{ secrets.SSH_KEY }}
         script: |
+          echo "🔄 Updating server code..."
           cd ${{ secrets.SSH_PATH }}
+
+          # Install production dependencies
           npm install --production
-          pm2 restart $APP_NAME || pm2 start npm --name "$APP_NAME" -- start
-          pm2 save
+
+          # Build Next.js for production
+          npm run build
+
+          # Restart systemd service
+          sudo systemctl restart myapp
+          sudo systemctl status myapp --no-pager
