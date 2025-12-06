@@ -1,4 +1,4 @@
-name: CI/CD Deploy to Azure VM (Next.js + PM2 + NGINX)
+name: CI/CD Deploy to Azure VM (Next.js + PM2 + NGINX + RSYNC)
 
 on:
   push:
@@ -9,53 +9,40 @@ env:
   NODE_VERSION: '20.x'
   APP_NAME: 'myapp'
 
-permissions:
-  contents: read
-
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. Checkout code
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 2. Setup Node.js
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
 
-    # 3. Install dependencies
     - name: Install dependencies
       run: npm install
 
-    # 4. Build Next.js app
     - name: Build Next.js
       run: npm run build
 
-    # 5. Zip build package for upload
-    - name: Prepare deployment artifact
-      run: |
-        mkdir deploy
-        zip -r deploy/app.zip . \
-          -x "*.git*" \
-          -x "node_modules/*"
+    - name: Install rsync tool
+      run: sudo apt-get install -y rsync
 
-    # 6. Upload ZIP to Azure VM via SCP
-    - name: Upload artifact to VM
-      uses: appleboy/scp-action@v0.1.7
+    - name: Deploy with rsync
+      uses: burnett01/rsync-deployments@7.0.1
       with:
-        host: ${{ secrets.SSH_HOST }}
-        username: ${{ secrets.SSH_USER }}
-        key: ${{ secrets.SSH_KEY }}
-        source: "deploy/app.zip"
-        target: "${{ secrets.SSH_PATH }}/app.zip"
+        switches: -avzr --delete
+        path: ./
+        remote_path: ${{ secrets.SSH_PATH }}
+        remote_host: ${{ secrets.SSH_HOST }}
+        remote_user: ${{ secrets.SSH_USER }}
+        remote_key: ${{ secrets.SSH_KEY }}
 
-    # 7. SSH into VM → deploy & restart app
-    - name: Deploy on Azure VM
+    - name: Restart PM2 on VM
       uses: appleboy/ssh-action@v1.0.3
       with:
         host: ${{ secrets.SSH_HOST }}
@@ -63,24 +50,6 @@ jobs:
         key: ${{ secrets.SSH_KEY }}
         script: |
           cd ${{ secrets.SSH_PATH }}
-
-          echo "Stopping PM2 old instance..."
-          pm2 stop $APP_NAME || true
-
-          echo "Cleaning old release..."
-          rm -rf release
-          mkdir release
-
-          echo "Unzipping new release..."
-          unzip -o app.zip -d release
-
-          cd release
-
-          echo "Installing production dependencies..."
-          npm install --production --omit=dev
-
-          echo "Starting app with PM2..."
-          pm2 start npm --name "$APP_NAME" -- start
-
-          echo "Saving PM2 state..."
+          npm install --production
+          pm2 restart $APP_NAME || pm2 start npm --name "$APP_NAME" -- start
           pm2 save
