@@ -1,4 +1,4 @@
-name: Deploy Next.js to Azure VM
+name: Deploy Next.js to Azure VM + SonarQube Scan
 
 on:
   push:
@@ -6,23 +6,66 @@ on:
   workflow_dispatch:
 
 env:
-  NODE_VERSION: '20.x'
+  NODE_VERSION: "20.x"
 
 jobs:
-  deploy:
+  build_and_deploy:
     runs-on: ubuntu-latest
 
     steps:
+    # -------------------------------
+    # 1. Checkout Code
+    # -------------------------------
     - name: Checkout Code
       uses: actions/checkout@v4
 
+    # -------------------------------
+    # 2. Setup Node
+    # -------------------------------
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: "npm"
+
+    # -------------------------------
+    # 3. Install dependencies
+    # -------------------------------
+    - name: Install Dependencies
+      run: npm install
+
+    # -------------------------------
+    # 4. Build Next.js
+    # -------------------------------
+    - name: Build Next.js App
+      run: npm run build
+
+    # -------------------------------
+    # 5. Run SonarQube Scan (LOCAL MACHINE)
+    # Sends analysis → SonarQube VM
+    # -------------------------------
+    - name: SonarQube Scan
+      uses: SonarSource/sonarqube-scan-action@v2
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+    # -------------------------------
+    # 6. Remove node_modules before upload
+    # -------------------------------
     - name: Remove node_modules before upload
       run: rm -rf node_modules
 
+    # -------------------------------
+    # 7. Install rsync
+    # -------------------------------
     - name: Install rsync
       run: sudo apt-get install -y rsync
 
-    - name: Upload files to VM (without node_modules)
+    # -------------------------------
+    # 8. Upload files to VM without node_modules & .next
+    # -------------------------------
+    - name: Upload files to VM (no node_modules)
       uses: burnett01/rsync-deployments@7.0.1
       with:
         switches: -avzr --delete --exclude=node_modules --exclude=.next
@@ -32,6 +75,9 @@ jobs:
         remote_user: ${{ secrets.SSH_USER }}
         remote_key: ${{ secrets.SSH_KEY }}
 
+    # -------------------------------
+    # 9. Install & Build on Azure VM
+    # -------------------------------
     - name: Install & Build on VM
       uses: appleboy/ssh-action@v1.0.3
       with:
@@ -40,6 +86,7 @@ jobs:
         key: ${{ secrets.SSH_KEY }}
         script: |
           cd ${{ secrets.SSH_PATH }}
-          npm install
+          npm install --production
           npm run build
           sudo systemctl restart myapp
+
